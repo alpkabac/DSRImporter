@@ -39,6 +39,13 @@ world space. Use files from `map/MapStudioNew/` first.
 : A compressed model/mesh file. These are the visible chunks of the level.
 They do not know where they belong by themselves; the MSB places them.
 
+MSB objects
+: Doors, elevators, chests, levers, bonfires, fog gates, breakables, and other
+props are separate MSB object parts. The addon currently imports these as small
+yellow markers under `Objects_Placeholders`. Their names include the MSB
+instance name and object model ID. Real object meshes from `obj/oXXXX.objbnd.dcx`
+are a later step.
+
 `*.tpfbhd` + `*.tpfbdt`
 : A split texture archive. Pick the `.tpfbhd`; the `.tpfbdt` must sit beside it.
 
@@ -75,6 +82,7 @@ data cannot be read.
    - Load loose `*.flver.dcx` map pieces from that folder
    - Auto-load area textures from `map\m10\`
    - Read MSB placements and instance the meshes under a `Visual` node
+   - Add MSB object markers under an `Objects_Placeholders` node
 
 ## Important mental model
 

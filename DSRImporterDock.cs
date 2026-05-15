@@ -197,7 +197,9 @@ namespace DSRImporter
                 var options = new MapLoader.MapLoadOptions
                 {
                     AutoLoadTextures = true,
-                    LoadCollision = false,
+                    LoadObjectPlaceholders = true,
+                    LoadEnemyPlaceholders = true,
+                    LoadCollision = true,
                     HiResCollisionOnly = true,
                     ShowCollisionDebug = false
                 };

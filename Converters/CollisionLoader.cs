@@ -3,8 +3,10 @@ using Godot;
 using SoulsFormats;
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.IO;
 using System.Linq;
+using System.Text.Json;
 
 namespace DSRImporter
 {
@@ -47,6 +49,66 @@ namespace DSRImporter
         }
 
         // ── Public entry points ──────────────────────────────────────────────────
+
+        /// <summary>
+        /// Load collision meshes exported by tools/export_dsr_collision.py.
+        /// Returns a dictionary keyed by exported HKX stem, e.g. h0000B0A10.
+        /// </summary>
+        public static Dictionary<string, CollisionMesh> LoadFromExportedManifest(string mapId, string resolution = "hi")
+        {
+            var result = new Dictionary<string, CollisionMesh>(StringComparer.OrdinalIgnoreCase);
+            string manifestPath = ProjectSettings.GlobalizePath(
+                $"res://imported/dsr_collision/{mapId}/{mapId}_collision_manifest.json");
+
+            if (!File.Exists(manifestPath))
+            {
+                GD.PrintErr($"[DSRImporter] Collision manifest not found: {manifestPath}");
+                return result;
+            }
+
+            using var doc = JsonDocument.Parse(File.ReadAllText(manifestPath));
+            if (!doc.RootElement.TryGetProperty("resolutions", out var resolutions))
+                return result;
+
+            foreach (var res in resolutions.EnumerateArray())
+            {
+                if (!res.TryGetProperty("resolution", out var resName) ||
+                    !string.Equals(resName.GetString(), resolution, StringComparison.OrdinalIgnoreCase))
+                    continue;
+
+                if (!res.TryGetProperty("models", out var models))
+                    continue;
+
+                foreach (var model in models.EnumerateArray())
+                {
+                    string stem = model.GetProperty("stem").GetString() ?? "";
+                    string objPath = model.GetProperty("path").GetString() ?? "";
+                    if (string.IsNullOrWhiteSpace(stem) || string.IsNullOrWhiteSpace(objPath))
+                        continue;
+
+                    if (!Path.IsPathRooted(objPath))
+                        objPath = ProjectSettings.GlobalizePath(objPath);
+                    if (!File.Exists(objPath))
+                    {
+                        GD.PrintErr($"[DSRImporter] Exported collision OBJ missing: {objPath}");
+                        continue;
+                    }
+
+                    try
+                    {
+                        result[stem] = LoadObjCollision(stem, objPath);
+                    }
+                    catch (Exception ex)
+                    {
+                        GD.PrintErr($"[DSRImporter] Collision OBJ '{stem}' failed: {ex.Message}");
+                    }
+                }
+
+                break;
+            }
+
+            return result;
+        }
 
         /// <summary>
         /// Load all collision meshes from a BXF4 split archive (hkxbhd+hkxbdt).
@@ -132,6 +194,62 @@ namespace DSRImporter
         }
 
         // ── HKX graph traversal ──────────────────────────────────────────────────
+
+        private static CollisionMesh LoadObjCollision(string name, string objPath)
+        {
+            var vertices = new List<Godot.Vector3>();
+            var indices = new List<int>();
+
+            foreach (string rawLine in File.ReadLines(objPath))
+            {
+                string line = rawLine.Trim();
+                if (line.Length == 0 || line.StartsWith("#", StringComparison.Ordinal))
+                    continue;
+
+                if (line.StartsWith("v ", StringComparison.Ordinal))
+                {
+                    string[] parts = line.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+                    if (parts.Length < 4)
+                        continue;
+
+                    vertices.Add(new Godot.Vector3(
+                        ParseFloat(parts[1]),
+                        ParseFloat(parts[2]),
+                        ParseFloat(parts[3])));
+                }
+                else if (line.StartsWith("f ", StringComparison.Ordinal))
+                {
+                    string[] parts = line.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+                    if (parts.Length < 4)
+                        continue;
+
+                    int first = ParseObjIndex(parts[1], vertices.Count);
+                    for (int i = 2; i + 1 < parts.Length; i++)
+                    {
+                        indices.Add(first);
+                        indices.Add(ParseObjIndex(parts[i], vertices.Count));
+                        indices.Add(ParseObjIndex(parts[i + 1], vertices.Count));
+                    }
+                }
+            }
+
+            return new CollisionMesh
+            {
+                Name = name,
+                Vertices = vertices.ToArray(),
+                Indices = indices.ToArray()
+            };
+        }
+
+        private static float ParseFloat(string text)
+            => float.Parse(text, NumberStyles.Float, CultureInfo.InvariantCulture);
+
+        private static int ParseObjIndex(string token, int vertexCount)
+        {
+            string value = token.Split('/')[0];
+            int index = int.Parse(value, NumberStyles.Integer, CultureInfo.InvariantCulture);
+            return index < 0 ? vertexCount + index : index - 1;
+        }
 
         private static List<CollisionMesh> ExtractFromBytes(byte[] bytes)
         {

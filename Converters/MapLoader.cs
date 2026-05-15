@@ -23,6 +23,8 @@ namespace DSRImporter
             public bool ShowCollisionDebug;  // Also show visible debug collision mesh (green)
             public bool HiResCollisionOnly;  // Skip lo-res (l-prefix) collision
             public bool AutoLoadTextures;    // Attempt to auto-find and load .tpfbhd alongside
+            public bool LoadObjectPlaceholders;
+            public bool LoadEnemyPlaceholders;
         }
 
         // ── Full map load (recommended) ──────────────────────────────────────────
@@ -68,6 +70,12 @@ namespace DSRImporter
             bool placedFromMsb = TryPlaceMapPiecesFromMSB(msbPath, flverDict, root);
             if (!placedFromMsb)
                 AddRawFLVERInstances(flverDict, root);
+
+            if (options.LoadObjectPlaceholders)
+                TryAddObjects(msbPath, mapDir, textureCache, root);
+
+            if (options.LoadEnemyPlaceholders)
+                TryAddEnemies(msbPath, mapDir, textureCache, root);
 
             // ── Step 4: Collision ─────────────────────────────────────────────
             if (options.LoadCollision)
@@ -144,6 +152,208 @@ namespace DSRImporter
             return false;
         }
 
+        private static void TryAddObjects(
+            string msbPath,
+            string mapDir,
+            Dictionary<string, Texture2D> textureCache,
+            Node3D root)
+        {
+            List<MSBLoader.ObjectPlacement> objects;
+            try
+            {
+                objects = MSBLoader.ReadObjects(msbPath);
+            }
+            catch (Exception ex)
+            {
+                GD.PrintErr($"[DSRImporter] Object placeholder read failed: {ex.Message}");
+                return;
+            }
+
+            string mapRoot = Path.GetDirectoryName(mapDir) ?? mapDir;
+            string gameRoot = Path.GetDirectoryName(mapRoot) ?? mapRoot;
+            var objectMeshes = ObjectLoader.LoadObjectMeshes(gameRoot, GetObjectModelNames(objects), textureCache);
+
+            var objectRoot = new Node3D { Name = "Objects" };
+            root.AddChild(objectRoot);
+
+            int meshObjects = 0, placeholders = 0;
+            foreach (var obj in objects)
+            {
+                var objNode = new Node3D
+                {
+                    Name = $"{obj.InstanceName} [{obj.ModelName}]",
+                    Transform = obj.Transform
+                };
+                SetObjectMetadata(objNode, obj);
+                objectRoot.AddChild(objNode);
+
+                if (objectMeshes.TryGetValue(obj.ModelName, out var meshes) && meshes.Count > 0)
+                {
+                    foreach (var mesh in meshes)
+                    {
+                        objNode.AddChild(new MeshInstance3D
+                        {
+                            Name = mesh.ResourceName == "" ? obj.ModelName : mesh.ResourceName,
+                            Mesh = mesh
+                        });
+                    }
+                    meshObjects++;
+                }
+                else
+                {
+                    objNode.AddChild(CreateObjectPlaceholder(obj));
+                    placeholders++;
+                }
+            }
+
+            GD.Print($"[DSRImporter] Objects: {meshObjects} mesh objects, {placeholders} placeholders.");
+        }
+
+        private static IEnumerable<string> GetObjectModelNames(IEnumerable<MSBLoader.ObjectPlacement> objects)
+        {
+            var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var obj in objects)
+            {
+                if (!string.IsNullOrWhiteSpace(obj.ModelName) && seen.Add(obj.ModelName))
+                    yield return obj.ModelName;
+            }
+        }
+
+        private static MeshInstance3D CreateObjectPlaceholder(MSBLoader.ObjectPlacement obj)
+        {
+            var material = new StandardMaterial3D
+            {
+                AlbedoColor = new Color(1.0f, 0.78f, 0.18f, 0.85f),
+                Transparency = BaseMaterial3D.TransparencyEnum.Alpha,
+                ShadingMode = BaseMaterial3D.ShadingModeEnum.Unshaded
+            };
+
+            var mesh = new BoxMesh { Size = new Godot.Vector3(0.45f, 0.45f, 0.45f) };
+            mesh.Material = material;
+
+            var marker = new MeshInstance3D
+            {
+                Name = "Placeholder",
+                Mesh = mesh
+            };
+            SetObjectMetadata(marker, obj);
+            return marker;
+        }
+
+        private static void SetObjectMetadata(Node node, MSBLoader.ObjectPlacement obj)
+        {
+            node.SetMeta("DSR_Type", "Object");
+            node.SetMeta("DSR_ModelName", obj.ModelName);
+            node.SetMeta("DSR_EntityID", obj.EntityID);
+            node.SetMeta("DSR_CollisionName", obj.CollisionName);
+            node.SetMeta("DSR_InitAnimID", obj.InitAnimID);
+        }
+
+        private static void TryAddEnemies(
+            string msbPath,
+            string mapDir,
+            Dictionary<string, Texture2D> textureCache,
+            Node3D root)
+        {
+            List<MSBLoader.EnemyPlacement> enemies;
+            try
+            {
+                enemies = MSBLoader.ReadEnemies(msbPath);
+            }
+            catch (Exception ex)
+            {
+                GD.PrintErr($"[DSRImporter] Enemy read failed: {ex.Message}");
+                return;
+            }
+
+            string mapRoot = Path.GetDirectoryName(mapDir) ?? mapDir;
+            string gameRoot = Path.GetDirectoryName(mapRoot) ?? mapRoot;
+            var characterMeshes = CharacterLoader.LoadCharacterMeshes(gameRoot, GetEnemyModelNames(enemies), textureCache);
+
+            var enemyRoot = new Node3D { Name = "Enemies" };
+            root.AddChild(enemyRoot);
+
+            int meshEnemies = 0, placeholders = 0;
+            foreach (var enemy in enemies)
+            {
+                var enemyNode = new Node3D
+                {
+                    Name = $"{enemy.InstanceName} [{enemy.ModelName}]",
+                    Transform = enemy.Transform
+                };
+                SetEnemyMetadata(enemyNode, enemy);
+                enemyRoot.AddChild(enemyNode);
+
+                if (characterMeshes.TryGetValue(enemy.ModelName, out var meshes) && meshes.Count > 0)
+                {
+                    foreach (var mesh in meshes)
+                    {
+                        enemyNode.AddChild(new MeshInstance3D
+                        {
+                            Name = mesh.ResourceName == "" ? enemy.ModelName : mesh.ResourceName,
+                            Mesh = mesh
+                        });
+                    }
+                    meshEnemies++;
+                }
+                else
+                {
+                    enemyNode.AddChild(CreateEnemyPlaceholder(enemy));
+                    placeholders++;
+                }
+            }
+
+            GD.Print($"[DSRImporter] Enemies: {meshEnemies} mesh enemies, {placeholders} placeholders.");
+        }
+
+        private static IEnumerable<string> GetEnemyModelNames(IEnumerable<MSBLoader.EnemyPlacement> enemies)
+        {
+            var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var enemy in enemies)
+            {
+                if (!string.IsNullOrWhiteSpace(enemy.ModelName) && seen.Add(enemy.ModelName))
+                    yield return enemy.ModelName;
+            }
+        }
+
+        private static MeshInstance3D CreateEnemyPlaceholder(MSBLoader.EnemyPlacement enemy)
+        {
+            var material = new StandardMaterial3D
+            {
+                AlbedoColor = new Color(1.0f, 0.18f, 0.28f, 0.85f),
+                Transparency = BaseMaterial3D.TransparencyEnum.Alpha,
+                ShadingMode = BaseMaterial3D.ShadingModeEnum.Unshaded
+            };
+
+            var mesh = new CapsuleMesh
+            {
+                Radius = 0.35f,
+                Height = 1.8f
+            };
+            mesh.Material = material;
+
+            var marker = new MeshInstance3D
+            {
+                Name = "Placeholder",
+                Mesh = mesh
+            };
+            SetEnemyMetadata(marker, enemy);
+            return marker;
+        }
+
+        private static void SetEnemyMetadata(Node node, MSBLoader.EnemyPlacement enemy)
+        {
+            node.SetMeta("DSR_Type", "Enemy");
+            node.SetMeta("DSR_ModelName", enemy.ModelName);
+            node.SetMeta("DSR_EntityID", enemy.EntityID);
+            node.SetMeta("DSR_CollisionName", enemy.CollisionName);
+            node.SetMeta("DSR_ThinkParamID", enemy.ThinkParamID);
+            node.SetMeta("DSR_NPCParamID", enemy.NPCParamID);
+            node.SetMeta("DSR_TalkID", enemy.TalkID);
+            node.SetMeta("DSR_CharaInitID", enemy.CharaInitID);
+            node.SetMeta("DSR_InitAnimID", enemy.InitAnimID);
+        }
+
         private static IEnumerable<string> BuildRemasteredModelNameCandidates(string modelName)
         {
             // DS1 MSB model names are often short, e.g. m1330B0.
@@ -188,37 +398,21 @@ namespace DSRImporter
             var colPlacements = MSBLoader.ReadCollisions(msbPath);
 
             // DS:R HKX naming: h{mapId without 'm'} → hi-res, l{...} → lo-res
-            string suffix    = mapId.Substring(1); // "10_00_00_00"
-            var colMeshes    = new Dictionary<string, CollisionLoader.CollisionMesh>(StringComparer.OrdinalIgnoreCase);
-
-            string hiResBhd = Path.Combine(dir, $"h{suffix}.hkxbhd");
-            string hiResBdt = Path.Combine(dir, $"h{suffix}.hkxbdt");
-            if (File.Exists(hiResBhd))
-            {
-                foreach (var kv in CollisionLoader.LoadFromBXF(hiResBhd, hiResBdt))
-                    colMeshes[kv.Key] = kv.Value;
-                GD.Print($"[DSRImporter] Hi-res collision: {colMeshes.Count} meshes loaded");
-            }
-            else GD.PrintErr($"[DSRImporter] No hi-res collision HKX at {hiResBhd}");
+            var colMeshes = CollisionLoader.LoadFromExportedManifest(mapId, "hi");
+            GD.Print($"[DSRImporter] Exported hi-res collision: {colMeshes.Count} meshes loaded");
 
             if (!hiResOnly)
             {
-                string loResBhd = Path.Combine(dir, $"l{suffix}.hkxbhd");
-                string loResBdt = Path.Combine(dir, $"l{suffix}.hkxbdt");
-                if (File.Exists(loResBhd))
-                {
-                    int before = colMeshes.Count;
-                    foreach (var kv in CollisionLoader.LoadFromBXF(loResBhd, loResBdt))
-                        colMeshes[kv.Key] = kv.Value;
-                    GD.Print($"[DSRImporter] Lo-res collision: {colMeshes.Count - before} additional meshes");
-                }
+                int before = colMeshes.Count;
+                foreach (var kv in CollisionLoader.LoadFromExportedManifest(mapId, "lo"))
+                    colMeshes[kv.Key] = kv.Value;
+                GD.Print($"[DSRImporter] Exported lo-res collision: {colMeshes.Count - before} additional meshes");
             }
 
             int colPlaced = 0;
             foreach (var cp in colPlacements)
             {
-                if (!colMeshes.TryGetValue(cp.ModelName, out var colMesh) &&
-                    !colMeshes.TryGetValue(cp.ModelName.ToLowerInvariant(), out colMesh))
+                if (!TryGetCollisionMesh(colMeshes, cp.ModelName, out var colMesh))
                     continue;
 
                 var body = CollisionLoader.ToStaticBody(colMesh);
@@ -237,6 +431,43 @@ namespace DSRImporter
         }
 
         // ── FLVER dictionary ─────────────────────────────────────────────────────
+
+        private static bool TryGetCollisionMesh(
+            Dictionary<string, CollisionLoader.CollisionMesh> colMeshes,
+            string modelName,
+            out CollisionLoader.CollisionMesh mesh)
+        {
+            if (colMeshes.TryGetValue(modelName, out mesh))
+                return true;
+
+            string lower = modelName.ToLowerInvariant();
+            if (colMeshes.TryGetValue(lower, out mesh))
+                return true;
+
+            foreach (string candidate in BuildRemasteredCollisionNameCandidates(modelName))
+            {
+                if (colMeshes.TryGetValue(candidate, out mesh))
+                    return true;
+            }
+
+            return false;
+        }
+
+        private static IEnumerable<string> BuildRemasteredCollisionNameCandidates(string modelName)
+        {
+            if (!modelName.StartsWith("h", StringComparison.OrdinalIgnoreCase) &&
+                !modelName.StartsWith("l", StringComparison.OrdinalIgnoreCase))
+                yield break;
+
+            if (modelName.IndexOf('A') >= 0 || modelName.Length < 2)
+                yield break;
+
+            for (int area = 10; area <= 18; area++)
+            {
+                yield return $"{modelName}A{area}";
+                yield return $"{modelName.ToLowerInvariant()}a{area}";
+            }
+        }
 
         private static Dictionary<string, ArrayMesh> LoadFLVERDictionary(
             string bhd, string bdt, Dictionary<string, Texture2D> textureCache)

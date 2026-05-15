@@ -46,6 +46,12 @@ namespace DSRImporter
             return added;
         }
 
+        public static int LoadBytesIntoCache(byte[] bytes, Dictionary<string, Texture2D> cache)
+        {
+            var tpf = TPF.Read(bytes);
+            return LoadTPFTextures(tpf, cache);
+        }
+
         private static int LoadSplitTPFArchive(string bhdPath, string bdtPath, Dictionary<string, Texture2D> cache)
         {
             if (BXF4.IsHeader(bhdPath))
